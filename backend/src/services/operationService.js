@@ -49,14 +49,14 @@ async function lockProducts(client, items) {
 }
 
 // Calcula neto, IVA y costo de cada renglon con precios decimales exactos.
-function calculateLines(items, products, isSale) {
+function calculateLines(items, products, isSale, taxRate = IVA_RATE) {
   return items.map((item) => {
     const product = products.get(Number(item.producto_id))
     const unitPrice = item.precio_unitario === undefined
       ? new Decimal(isSale ? product.precio_venta : product.costo_unitario)
       : money(item.precio_unitario, 'El precio unitario')
     const net = unitPrice.mul(item.cantidad).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
-    const tax = net.mul(IVA_RATE).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+    const tax = net.mul(taxRate).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
     return {
       productoId: Number(item.producto_id),
       cantidad: Number(item.cantidad),
@@ -77,10 +77,15 @@ async function validatePayments(client, payments, total, operation) {
   if (!Array.isArray(payments) || payments.length === 0) {
     throw httpError(400, 'Debe indicar al menos una forma de pago.')
   }
-  const normalized = payments.map((payment) => ({
-    formaPagoId: Number(payment.forma_pago_id),
-    importe: money(payment.importe, 'El importe del pago'),
-  }))
+  const normalized = payments.map((payment) => {
+    const pct = new Decimal(payment.recargo_porcentaje || 0)
+    if (!pct.isFinite() || pct.isNegative() || pct.gt(1000)) throw httpError(400, 'El recargo debe ser un porcentaje entre 0 y 1000.')
+    return {
+      formaPagoId: Number(payment.forma_pago_id),
+      importe: money(payment.importe, 'El importe del pago'),
+      recargoPorcentaje: pct,
+    }
+  })
   if (normalized.some((payment) => !Number.isInteger(payment.formaPagoId) || payment.formaPagoId <= 0
     || payment.importe.isZero())) {
     throw httpError(400, 'Cada pago debe incluir una forma válida y un importe mayor a cero.')
@@ -98,6 +103,9 @@ async function validatePayments(client, payments, total, operation) {
     )
     if (!rows[0]?.cuenta_id) throw httpError(400, 'La forma de pago no es válida para esta operación.')
     payment.cuentaId = rows[0].cuenta_id
+    // El recargo se suma al importe efectivamente cobrado/pagado; la factura conserva su total.
+    payment.recargo = payment.importe.mul(payment.recargoPorcentaje).div(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+    payment.cobrado = payment.importe.plus(payment.recargo)
   }
   return normalized
 }
@@ -105,8 +113,10 @@ async function validatePayments(client, payments, total, operation) {
 async function savePayments(client, payments, saleId, purchaseId) {
   for (const payment of payments) {
     await client.query(
-      'INSERT INTO pagos_operacion (venta_id, compra_id, forma_pago_id, importe) VALUES ($1, $2, $3, $4)',
-      [saleId ?? null, purchaseId ?? null, payment.formaPagoId, payment.importe.toFixed(2)],
+      `INSERT INTO pagos_operacion (venta_id, compra_id, forma_pago_id, importe, recargo_porcentaje, recargo_importe)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [saleId ?? null, purchaseId ?? null, payment.formaPagoId, payment.importe.toFixed(2),
+        payment.recargoPorcentaje.toFixed(2), payment.recargo.toFixed(2)],
     )
   }
 }
@@ -147,13 +157,16 @@ export async function createSale(input, userId) {
       }
     }
 
-    const lines = calculateLines(items, products, true)
+    // Un emisor monotributista siempre factura C sin IVA; si no, la condición del cliente define A o B.
+    const monotributo = input.emisor_monotributista === true
+    // Un responsable inscripto o un monotributista receptor recibe Factura A; el resto, Factura B.
+    const invoiceType = monotributo ? 'FACTURA_C'
+      : ['RESPONSABLE_INSCRIPTO', 'MONOTRIBUTISTA'].includes(customer.condicion_iva) ? 'FACTURA_A' : 'FACTURA_B'
+    const lines = calculateLines(items, products, true, monotributo ? new Decimal(0) : IVA_RATE)
     const net = sum(lines, 'neto')
     const tax = sum(lines, 'iva')
     const total = net.plus(tax)
     const payments = await validatePayments(client, input.pagos, total, 'venta')
-    // La condicion fiscal del cliente determina el tipo de factura emitida.
-    const invoiceType = customer.condicion_iva === 'RESPONSABLE_INSCRIPTO' ? 'FACTURA_A' : 'FACTURA_B'
     const { rows } = await client.query(
       `INSERT INTO ventas (cliente_id, fecha, tipo_comprobante, neto, iva, total, creado_por)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
@@ -178,10 +191,15 @@ export async function createSale(input, userId) {
 
     await savePayments(client, payments, sale.id, null)
     const accounts = await getAccountIds(client)
-    const invoiceLines = payments.map((payment) => ({ cuentaId: payment.cuentaId, debe: payment.importe }))
+    const surcharge = sum(payments, 'recargo')
+    if (!surcharge.isZero() && !accounts['4.2.01']) {
+      throw httpError(500, 'Falta la cuenta 4.2.01; ejecute database/migrations/003_cheque_diferido_recargos.sql.')
+    }
+    const invoiceLines = payments.map((payment) => ({ cuentaId: payment.cuentaId, debe: payment.cobrado }))
     invoiceLines.push(
       { cuentaId: accounts['4.1.01'], haber: net },
       { cuentaId: accounts['2.1.04'], haber: tax },
+      { cuentaId: accounts['4.2.01'], haber: surcharge },
     )
     await createJournal(client, {
       fecha: input.fecha, descripcion: `Venta según ${invoiceType} ${sale.numero_comprobante}`,
@@ -207,9 +225,28 @@ export async function createSale(input, userId) {
 
 // Compra: registra factura, aumenta stock/costo, guarda pagos y contabiliza IVA credito.
 export async function createPurchase(input, userId) {
-  const items = validateItems(input.items)
+  if (!Array.isArray(input.items) || input.items.length === 0) {
+    throw httpError(400, 'La operación debe incluir al menos un producto.')
+  }
+  // Los renglones libres solo llevan descripción y precio: no tocan el catálogo ni el stock.
+  const freeInput = input.items.filter((item) => !item.producto_id)
+  const catalogInput = input.items.filter((item) => item.producto_id)
+  const freeItems = freeInput.map((item) => {
+    const description = String(item.descripcion ?? '').trim()
+    const quantity = Number(item.cantidad)
+    if (!description || description.length > 180 || !Number.isInteger(quantity) || quantity <= 0) {
+      throw httpError(400, 'Cada renglón libre necesita una descripción (hasta 180 caracteres) y una cantidad entera mayor a cero.')
+    }
+    return { descripcion: description, cantidad: quantity, precioUnitario: money(item.precio_unitario, 'El precio unitario') }
+  })
+  const items = catalogInput.length ? validateItems(catalogInput) : []
   if (!input.proveedor_id || !input.fecha || !input.numero_comprobante) {
     throw httpError(400, 'Proveedor, fecha y número de comprobante son obligatorios.')
+  }
+
+  const invoiceType = input.tipo_comprobante ?? 'FACTURA_A'
+  if (!['FACTURA_A', 'FACTURA_B'].includes(invoiceType)) {
+    throw httpError(400, 'El tipo de comprobante debe ser FACTURA_A o FACTURA_B.')
   }
 
   return withTransaction(async (client) => {
@@ -219,16 +256,25 @@ export async function createPurchase(input, userId) {
     if (!providerRows[0]) throw httpError(404, 'El proveedor no existe o está inactivo.')
 
     const products = await lockProducts(client, items)
-    const lines = calculateLines(items, products, false)
-    const net = sum(lines, 'neto')
-    const tax = sum(lines, 'iva')
+    // La Factura B no discrimina IVA, por lo que no genera crédito fiscal.
+    const taxRate = invoiceType === 'FACTURA_A' ? IVA_RATE : new Decimal(0)
+    const lines = calculateLines(items, products, false, taxRate)
+    const freeLines = freeItems.map((item) => {
+      const net = item.precioUnitario.mul(item.cantidad).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+      const tax = net.mul(taxRate).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+      return { ...item, neto: net, iva: tax, total: net.plus(tax) }
+    })
+    const stockNet = sum(lines, 'neto')
+    const freeNet = sum(freeLines, 'neto')
+    const net = stockNet.plus(freeNet)
+    const tax = sum(lines, 'iva').plus(sum(freeLines, 'iva'))
     const total = net.plus(tax)
     const payments = await validatePayments(client, input.pagos, total, 'compra')
     const { rows } = await client.query(
       `INSERT INTO compras (proveedor_id, fecha, tipo_comprobante, numero_comprobante, neto, iva, total, creado_por)
-       VALUES ($1, $2, 'FACTURA_A', $3, $4, $5, $6, $7) RETURNING *`,
+       VALUES ($1, $2, $8, $3, $4, $5, $6, $7) RETURNING *`,
       [input.proveedor_id, input.fecha, String(input.numero_comprobante).trim(),
-        net.toFixed(2), tax.toFixed(2), total.toFixed(2), userId],
+        net.toFixed(2), tax.toFixed(2), total.toFixed(2), userId, invoiceType],
     )
     const purchase = rows[0]
 
@@ -244,13 +290,31 @@ export async function createPurchase(input, userId) {
         type: 'COMPRA', referenceId: purchase.id, unitCost: line.precioUnitario,
       })
     }
+    for (const line of freeLines) {
+      await client.query(
+        `INSERT INTO detalle_compras (compra_id, producto_id, descripcion, cantidad, precio_unitario, neto, iva, total)
+         VALUES ($1, NULL, $2, $3, $4, $5, $6, $7)`,
+        [purchase.id, line.descripcion, line.cantidad, line.precioUnitario.toFixed(2),
+          line.neto.toFixed(2), line.iva.toFixed(2), line.total.toFixed(2)],
+      )
+    }
 
     await savePayments(client, payments, null, purchase.id)
     const accounts = await getAccountIds(client)
+    if (!freeNet.isZero() && !accounts['5.2.01']) {
+      throw httpError(500, 'Falta la cuenta 5.2.01; ejecute database/migrations/001_compras_renglones_libres.sql.')
+    }
+    const surcharge = sum(payments, 'recargo')
+    if (!surcharge.isZero() && !accounts['5.2.02']) {
+      throw httpError(500, 'Falta la cuenta 5.2.02; ejecute database/migrations/003_cheque_diferido_recargos.sql.')
+    }
     const purchaseLines = [
-      { cuentaId: accounts['1.1.03'], debe: net },
+      { cuentaId: accounts['1.1.03'], debe: stockNet },
+      // Los renglones libres no ingresan a inventario: se imputan a gastos.
+      { cuentaId: accounts['5.2.01'], debe: freeNet },
       { cuentaId: accounts['1.1.05'], debe: tax },
-      ...payments.map((payment) => ({ cuentaId: payment.cuentaId, haber: payment.importe })),
+      { cuentaId: accounts['5.2.02'], debe: surcharge },
+      ...payments.map((payment) => ({ cuentaId: payment.cuentaId, haber: payment.cobrado })),
     ]
     await createJournal(client, {
       fecha: input.fecha, descripcion: `Compra según factura ${purchase.numero_comprobante}`,

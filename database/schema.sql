@@ -17,7 +17,7 @@ CREATE TABLE clientes (
     identificacion VARCHAR(20) UNIQUE,
     domicilio VARCHAR(240),
     condicion_iva VARCHAR(30) NOT NULL CHECK (
-        condicion_iva IN ('RESPONSABLE_INSCRIPTO', 'CONSUMIDOR_FINAL')
+        condicion_iva IN ('RESPONSABLE_INSCRIPTO', 'MONOTRIBUTISTA', 'CONSUMIDOR_FINAL')
     ),
     activo BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -54,7 +54,7 @@ CREATE TABLE cuentas_contables (
     codigo VARCHAR(20) NOT NULL UNIQUE,
     nombre VARCHAR(120) NOT NULL UNIQUE,
     tipo VARCHAR(30) NOT NULL CHECK (
-        tipo IN ('ACTIVO', 'PASIVO', 'RESULTADO_POSITIVO', 'RESULTADO_NEGATIVO')
+        tipo IN ('ACTIVO', 'PASIVO', 'PATRIMONIO_NETO', 'RESULTADO_POSITIVO', 'RESULTADO_NEGATIVO')
     ),
     activo BOOLEAN NOT NULL DEFAULT TRUE
 );
@@ -75,7 +75,7 @@ CREATE TABLE ventas (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     cliente_id BIGINT NOT NULL REFERENCES clientes(id),
     fecha DATE NOT NULL,
-    tipo_comprobante VARCHAR(10) NOT NULL CHECK (tipo_comprobante IN ('FACTURA_A', 'FACTURA_B')),
+    tipo_comprobante VARCHAR(10) NOT NULL CHECK (tipo_comprobante IN ('FACTURA_A', 'FACTURA_B', 'FACTURA_C')),
     numero_comprobante VARCHAR(30) NOT NULL DEFAULT (
         '0001-' || LPAD(nextval('numero_comprobante_seq')::TEXT, 8, '0')
     ),
@@ -119,13 +119,15 @@ CREATE TABLE compras (
 CREATE TABLE detalle_compras (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     compra_id BIGINT NOT NULL REFERENCES compras(id),
-    producto_id BIGINT NOT NULL REFERENCES productos(id),
+    producto_id BIGINT REFERENCES productos(id),
+    descripcion VARCHAR(180),
     cantidad INTEGER NOT NULL CHECK (cantidad > 0),
     precio_unitario NUMERIC(14, 2) NOT NULL CHECK (precio_unitario >= 0),
     neto NUMERIC(14, 2) NOT NULL CHECK (neto >= 0),
     iva NUMERIC(14, 2) NOT NULL CHECK (iva >= 0),
     total NUMERIC(14, 2) NOT NULL CHECK (total >= 0),
-    CHECK (total = neto + iva)
+    CHECK (total = neto + iva),
+    CHECK (producto_id IS NOT NULL OR descripcion IS NOT NULL)
 );
 
 CREATE TABLE pagos_operacion (
@@ -134,6 +136,8 @@ CREATE TABLE pagos_operacion (
     compra_id BIGINT REFERENCES compras(id),
     forma_pago_id BIGINT NOT NULL REFERENCES formas_pago(id),
     importe NUMERIC(14, 2) NOT NULL CHECK (importe > 0),
+    recargo_porcentaje NUMERIC(6, 2) NOT NULL DEFAULT 0 CHECK (recargo_porcentaje >= 0),
+    recargo_importe NUMERIC(14, 2) NOT NULL DEFAULT 0 CHECK (recargo_importe >= 0),
     CHECK ((venta_id IS NOT NULL)::INTEGER + (compra_id IS NOT NULL)::INTEGER = 1)
 );
 
@@ -184,7 +188,7 @@ CREATE TABLE asientos (
     fecha DATE NOT NULL,
     descripcion VARCHAR(240) NOT NULL,
     tipo_operacion VARCHAR(20) NOT NULL CHECK (
-        tipo_operacion IN ('VENTA', 'CMV', 'COMPRA', 'LIQUIDACION_IVA')
+        tipo_operacion IN ('VENTA', 'CMV', 'COMPRA', 'LIQUIDACION_IVA', 'APERTURA')
     ),
     venta_id BIGINT REFERENCES ventas(id),
     compra_id BIGINT REFERENCES compras(id),
@@ -203,6 +207,8 @@ CREATE TABLE asientos (
             AND venta_id IS NULL AND liquidacion_iva_id IS NULL)
         OR (tipo_operacion = 'LIQUIDACION_IVA' AND liquidacion_iva_id IS NOT NULL
             AND venta_id IS NULL AND compra_id IS NULL)
+        OR (tipo_operacion = 'APERTURA' AND venta_id IS NULL
+            AND compra_id IS NULL AND liquidacion_iva_id IS NULL)
     )
 );
 
@@ -238,8 +244,12 @@ INSERT INTO cuentas_contables (codigo, nombre, tipo) VALUES
     ('2.1.02', 'Documentos a Pagar', 'PASIVO'),
     ('2.1.03', 'IVA a Pagar', 'PASIVO'),
     ('2.1.04', 'IVA Debito Fiscal', 'PASIVO'),
+    ('3.1.01', 'Capital', 'PATRIMONIO_NETO'),
     ('4.1.01', 'Ventas', 'RESULTADO_POSITIVO'),
-    ('5.1.01', 'Costo de Mercaderias Vendidas', 'RESULTADO_NEGATIVO')
+    ('5.1.01', 'Costo de Mercaderias Vendidas', 'RESULTADO_NEGATIVO'),
+    ('5.2.01', 'Gastos y Servicios Varios', 'RESULTADO_NEGATIVO'),
+    ('4.2.01', 'Recargos Financieros Ganados', 'RESULTADO_POSITIVO'),
+    ('5.2.02', 'Recargos Financieros Pagados', 'RESULTADO_NEGATIVO')
 ON CONFLICT (codigo) DO NOTHING;
 
 INSERT INTO formas_pago (codigo, nombre, cuenta_venta_id, cuenta_compra_id)
@@ -248,6 +258,7 @@ FROM (VALUES
     ('EFECTIVO', 'Efectivo', '1.1.01', '1.1.01'),
     ('BANCO', 'Banco', '1.1.02', '1.1.02'),
     ('CHEQUE_PROPIO', 'Cheque propio', '1.1.02', '1.1.02'),
+    ('CHEQUE_DIFERIDO', 'Cheque diferido', '1.1.04', '2.1.02'),
     ('CUENTA_CORRIENTE', 'Cuenta corriente', '1.1.06', '2.1.01'),
     ('PAGARE', 'Pagaré / documento', '1.1.04', '2.1.02')
 ) AS medios(codigo, nombre, codigo_venta, codigo_compra)

@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { addPurchase, addSale, listOperations } from '../controllers/operationController.js'
+import { addPurchase, addSale, invoicePdf, listOperations } from '../controllers/operationController.js'
 import { accounts, dashboard, journal, ledger, paymentMethods, settleVat, vatSummary } from '../controllers/reportController.js'
 import { requireAuth } from '../middleware/auth.js'
 
@@ -19,6 +19,14 @@ router.get('/ventas', (request, response, next) => {
 router.get('/ventas/:id', (request, response, next) => {
   request.params.type = 'ventas'
   return listOperations(request, response, next)
+})
+router.get('/ventas/:id/pdf', (request, response, next) => {
+  request.params.type = 'ventas'
+  return invoicePdf(request, response, next)
+})
+router.get('/compras/:id/pdf', (request, response, next) => {
+  request.params.type = 'compras'
+  return invoicePdf(request, response, next)
 })
 router.post('/compras', addPurchase)
 router.get('/compras', (request, response, next) => {

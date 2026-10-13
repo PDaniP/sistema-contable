@@ -53,7 +53,7 @@ function normalizeInput(name, input) {
       throw httpError(400, 'La razón social es obligatoria.')
     }
     if (values.condicion_iva !== undefined
-      && !['RESPONSABLE_INSCRIPTO', 'CONSUMIDOR_FINAL'].includes(values.condicion_iva)) {
+      && !['RESPONSABLE_INSCRIPTO', 'MONOTRIBUTISTA', 'CONSUMIDOR_FINAL'].includes(values.condicion_iva)) {
       throw httpError(400, 'La condición de IVA del cliente no es válida.')
     }
   }

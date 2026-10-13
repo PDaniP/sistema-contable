@@ -182,3 +182,12 @@
     border-right-color: var(--border);
   }
 }
+
+/* Factura imprimible */
+.invoice-head{display:flex;justify-content:space-between;align-items:center;gap:16px;border-bottom:1px solid #ccc;padding-bottom:12px;margin-bottom:12px}
+.invoice-letter{border:2px solid currentColor;padding:6px 18px;text-align:center;font-size:28px}
+.invoice-letter small{display:block;font-size:11px}
+.invoice-party,.invoice-payments{margin:12px 0}
+@media print{body *{visibility:hidden}.invoice-sheet,.invoice-sheet *{visibility:visible}.invoice-sheet{position:absolute;left:0;top:0;width:100%}.no-print{display:none!important}}
+
+.payment-row{grid-template-columns:minmax(130px,1fr) 110px 80px 30px!important}.payment-row:not(:has(button)){grid-template-columns:minmax(130px,1fr) 110px 80px!important}.payment-row small{grid-column:1/-1;text-align:right}
