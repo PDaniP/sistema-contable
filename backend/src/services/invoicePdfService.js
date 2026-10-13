@@ -134,6 +134,9 @@ export async function renderInvoicePdf(operation, isSale) {
   }
 
   text(issuer.razon, layout.emisor.x, layout.emisor.y, { size: 12, font: bold })
+  // El domicilio del emisor se imprime bajo la razón social (en compras, el del proveedor).
+  text(issuer.domicilio, layout.emisor.x, layout.emisor.y - 12, { size: 8 })
+  text(issuer.localidad, layout.emisor.x, layout.emisor.y - 21, { size: 8 })
   cover(layout.numero.cover)
   text(`N° ${operation.numero_comprobante}`, layout.numero.x, layout.numero.y, { size: 10, font: bold })
   cover(layout.fecha.cover)

@@ -22,11 +22,11 @@ export async function createJournal(client, { fecha, descripcion, tipo, referenc
   }
 
   const { rows } = await client.query(
-    `INSERT INTO asientos (fecha, descripcion, tipo_operacion, venta_id, compra_id, liquidacion_iva_id, creado_por)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO asientos (fecha, descripcion, tipo_operacion, venta_id, compra_id, liquidacion_iva_id, cancelacion_id, creado_por)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING id`,
     [fecha, descripcion, tipo, reference.ventaId ?? null, reference.compraId ?? null,
-      reference.liquidacionId ?? null, userId],
+      reference.liquidacionId ?? null, reference.cancelacionId ?? null, userId],
   )
   const journalId = rows[0].id
 

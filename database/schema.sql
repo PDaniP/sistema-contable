@@ -141,6 +141,24 @@ CREATE TABLE pagos_operacion (
     CHECK ((venta_id IS NOT NULL)::INTEGER + (compra_id IS NOT NULL)::INTEGER = 1)
 );
 
+-- Cobros (recibos) y pagos (ordenes de pago) que cancelan saldos pendientes de operaciones a credito.
+CREATE SEQUENCE numero_recibo_seq START WITH 1;
+CREATE SEQUENCE numero_orden_pago_seq START WITH 1;
+
+CREATE TABLE cancelaciones (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    tipo VARCHAR(5) NOT NULL CHECK (tipo IN ('COBRO', 'PAGO')),
+    numero VARCHAR(30) NOT NULL UNIQUE,
+    pago_operacion_id BIGINT NOT NULL REFERENCES pagos_operacion(id),
+    forma_pago_id BIGINT NOT NULL REFERENCES formas_pago(id),
+    fecha DATE NOT NULL,
+    importe NUMERIC(14, 2) NOT NULL CHECK (importe > 0),
+    observaciones VARCHAR(240),
+    creado_por BIGINT NOT NULL REFERENCES usuarios(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_cancelaciones_pago ON cancelaciones (pago_operacion_id);
+
 -- El saldo de stock se acompana de un historial que valida cantidad y referencia de compra/venta.
 CREATE TABLE movimientos_stock (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -188,27 +206,27 @@ CREATE TABLE asientos (
     fecha DATE NOT NULL,
     descripcion VARCHAR(240) NOT NULL,
     tipo_operacion VARCHAR(20) NOT NULL CHECK (
-        tipo_operacion IN ('VENTA', 'CMV', 'COMPRA', 'LIQUIDACION_IVA', 'APERTURA')
+        tipo_operacion IN ('VENTA', 'CMV', 'COMPRA', 'LIQUIDACION_IVA', 'APERTURA', 'COBRO', 'PAGO')
     ),
     venta_id BIGINT REFERENCES ventas(id),
     compra_id BIGINT REFERENCES compras(id),
     liquidacion_iva_id BIGINT REFERENCES liquidaciones_iva(id),
+    cancelacion_id BIGINT REFERENCES cancelaciones(id),
     creado_por BIGINT NOT NULL REFERENCES usuarios(id),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CHECK (
         (venta_id IS NOT NULL)::INTEGER
         + (compra_id IS NOT NULL)::INTEGER
-        + (liquidacion_iva_id IS NOT NULL)::INTEGER <= 1
+        + (liquidacion_iva_id IS NOT NULL)::INTEGER
+        + (cancelacion_id IS NOT NULL)::INTEGER <= 1
     ),
     CHECK (
-        (tipo_operacion IN ('VENTA', 'CMV') AND venta_id IS NOT NULL
-            AND compra_id IS NULL AND liquidacion_iva_id IS NULL)
-        OR (tipo_operacion = 'COMPRA' AND compra_id IS NOT NULL
-            AND venta_id IS NULL AND liquidacion_iva_id IS NULL)
-        OR (tipo_operacion = 'LIQUIDACION_IVA' AND liquidacion_iva_id IS NOT NULL
-            AND venta_id IS NULL AND compra_id IS NULL)
-        OR (tipo_operacion = 'APERTURA' AND venta_id IS NULL
-            AND compra_id IS NULL AND liquidacion_iva_id IS NULL)
+        (tipo_operacion IN ('VENTA', 'CMV') AND venta_id IS NOT NULL)
+        OR (tipo_operacion = 'COMPRA' AND compra_id IS NOT NULL)
+        OR (tipo_operacion = 'LIQUIDACION_IVA' AND liquidacion_iva_id IS NOT NULL)
+        OR (tipo_operacion IN ('COBRO', 'PAGO') AND cancelacion_id IS NOT NULL)
+        OR (tipo_operacion = 'APERTURA' AND venta_id IS NULL AND compra_id IS NULL
+            AND liquidacion_iva_id IS NULL AND cancelacion_id IS NULL)
     )
 );
 

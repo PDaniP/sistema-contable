@@ -162,7 +162,8 @@ export async function createSale(input, userId) {
     // Un responsable inscripto o un monotributista receptor recibe Factura A; el resto, Factura B.
     const invoiceType = monotributo ? 'FACTURA_C'
       : ['RESPONSABLE_INSCRIPTO', 'MONOTRIBUTISTA'].includes(customer.condicion_iva) ? 'FACTURA_A' : 'FACTURA_B'
-    const lines = calculateLines(items, products, true, monotributo ? new Decimal(0) : IVA_RATE)
+    // La Factura C no discrimina IVA en el comprobante, pero el IVA se calcula y se liquida igual.
+    const lines = calculateLines(items, products, true, IVA_RATE)
     const net = sum(lines, 'neto')
     const tax = sum(lines, 'iva')
     const total = net.plus(tax)

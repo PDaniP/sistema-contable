@@ -37,7 +37,7 @@ DECLARE asiento BIGINT;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM asientos WHERE tipo_operacion = 'APERTURA') THEN
         INSERT INTO asientos (fecha, descripcion, tipo_operacion, creado_por)
-        VALUES (CURRENT_DATE, 'Asiento de apertura - patrimonio neto inicial', 'APERTURA',
+        VALUES (DATE '2026-04-01', 'Asiento de apertura - patrimonio neto inicial', 'APERTURA',
                 (SELECT id FROM usuarios ORDER BY id LIMIT 1))
         RETURNING id INTO asiento;
 

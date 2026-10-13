@@ -2,6 +2,10 @@ import { Router } from 'express'
 import { addPurchase, addSale, invoicePdf, listOperations } from '../controllers/operationController.js'
 import { accounts, dashboard, journal, ledger, paymentMethods, settleVat, vatSummary } from '../controllers/reportController.js'
 import { requireAuth } from '../middleware/auth.js'
+import { settlementHandlers } from '../controllers/settlementController.js'
+
+const cobros = settlementHandlers('COBRO')
+const pagos = settlementHandlers('PAGO')
 
 const router = Router()
 
@@ -38,6 +42,10 @@ router.get('/compras/:id', (request, response, next) => {
   return listOperations(request, response, next)
 })
 router.get('/libro-diario', journal)
+router.get('/cobros', cobros.list)
+router.post('/cobros', cobros.create)
+router.get('/pagos', pagos.list)
+router.post('/pagos', pagos.create)
 router.get('/asientos', journal)
 router.get('/asientos/:id', journal)
 router.get('/mayor/:cuentaId', ledger)
